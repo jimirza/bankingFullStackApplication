@@ -1,0 +1,176 @@
+const express = require('express');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const User = require('./user'); // Ensure the path is correct
+
+const router = express.Router();
+
+// Middleware to authenticate user
+const auth = (req, res, next) => {
+    const token = req.header('x-auth-token');
+    if (!token) return res.status(401).json({ msg: 'No token, authorization denied' });
+
+    try {
+        const decoded = jwt.verify(token, 'your_jwt_secret');
+        req.user = decoded.user;
+        next();
+    } catch (err) {
+        res.status(401).json({ msg: 'Token is not valid' });
+    }
+};
+router.post('/register', async (req, res) => {
+    const { email, password, accountType, accountNumber } = req.body;
+
+    try {
+        let user = await User.findOne({ email });
+        if (user) {
+            console.log('User already exists');
+            return res.status(400).json({ msg: 'User already exists' });
+        }
+
+        let accountNumberExists = await User.findOne({ accountNumber });
+        if (accountNumberExists) {
+            console.log('Account number already exists');
+            return res.status(400).json({ msg: 'Account number already exists' });
+        }
+
+        user = new User({ email, password, accountType, accountNumber });
+
+        const salt = await bcrypt.genSalt(10);
+        user.password = await bcrypt.hash(password, salt);
+
+        await user.save();
+
+        const payload = {
+            user: {
+                id: user.id
+            }
+        };
+
+        jwt.sign(
+            payload,
+            'your_jwt_secret',
+            { expiresIn: 360000 },
+            (err, token) => {
+                if (err) throw err;
+                console.log('User registered successfully');
+                res.json({ token });
+            }
+        );
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server error');
+    }
+});
+
+// Login a user
+router.post('/login', async (req, res) => {
+    const { email, password } = req.body;
+
+    try {
+        let user = await User.findOne({ email });
+        if (!user) {
+            console.log('Invalid credentials');
+            return res.status(400).json({ msg: 'Invalid credentials' });
+        }
+
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) {
+            console.log('Invalid credentials');
+            return res.status(400).json({ msg: 'Invalid credentials' });
+        }
+
+        const payload = {
+            user: {
+                id: user.id
+            }
+        };
+
+        jwt.sign(
+            payload,
+            'your_jwt_secret',
+            { expiresIn: 360000 },
+            (err, token) => {
+                if (err) throw err;
+                console.log('User logged in successfully');
+                res.json({ token });
+            }
+        );
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server error');
+    }
+});
+
+// Deposit money
+router.post('/deposit', auth, async (req, res) => {
+    const { amount } = req.body;
+
+    try {
+        let user = await User.findById(req.user.id);
+        user.balance += amount;
+        await user.save();
+        res.json({ balance: user.balance });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server error');
+    }
+});
+
+// Withdraw money
+router.post('/withdraw', auth, async (req, res) => {
+    const { amount } = req.body;
+
+    try {
+        let user = await User.findById(req.user.id);
+        if (user.balance < amount) {
+            return res.status(400).json({ msg: 'Insufficient funds' });
+        }
+        user.balance -= amount;
+        await user.save();
+        res.json({ balance: user.balance });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server error');
+    }
+});
+
+// Transfer money
+router.post('/transfer', auth, async (req, res) => {
+    const { recipientAccountNumber, amount } = req.body;
+
+    try {
+        let sender = await User.findById(req.user.id);
+        if (sender.balance < amount) {
+            return res.status(400).json({ msg: 'Insufficient funds' });
+        }
+
+        let recipient = await User.findOne({ accountNumber: recipientAccountNumber });
+        if (!recipient) {
+            return res.status(400).json({ msg: 'Recipient not found' });
+        }
+
+        sender.balance -= amount;
+        recipient.balance += amount;
+
+        await sender.save();
+        await recipient.save();
+
+        res.json({
+            balance: sender.balance,
+            recipientEmail: recipient.email,
+            recipientAccountNumber: recipient.accountNumber
+        });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server error');
+    }
+});
+
+// Test endpoint to verify server is working
+router.get('/', (req, res) => {
+    console.log('Test endpoint hit');
+    res.send('Server is working correctly');
+});
+
+module.exports = router;
